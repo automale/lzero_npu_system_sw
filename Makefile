@@ -1,5 +1,9 @@
 # 도커 이미지 및 컨테이너 이름 설정
+<<<<<<< HEAD
 IMAGE_NAME = npu-compiler:1.0
+=======
+IMAGE_NAME = npu-compiler:1.2
+>>>>>>> upstream/master
 CONTAINER_NAME = npu-compiler-env
 WORKSPACE = $(PWD)
 

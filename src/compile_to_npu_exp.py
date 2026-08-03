@@ -65,10 +65,29 @@ def build_rs2_struct(
 def compile_gemma_layer(layer_idx, gguf_reader):
     instructions = []
 
-    # 텐서 오프셋 가져오기 (가상 API)
-    # 실제 구현시 gguf_reader.tensors에서 data_offset을 추출합니다.
-    gate_weight_offset = 0x1000 # 예시 오프셋
-    up_weight_offset = 0x2000
+    # 1. 텐서 이름 접두사 설정 (예: 0번 레이어 -> "blk.0.")
+    layer_prefix = f"blk.{layer_idx}."
+    layer_offsets = {}
+
+    # 2. GGUF 파일 내의 모든 텐서 정보를 순회
+    for tensor in gguf_reader.tensors:
+        tensor_name = tensor.name
+        
+        # 3. 현재 찾는 레이어의 텐서인지 확인
+        if tensor_name.startswith(layer_prefix):
+            # 4. 키값 정제: "blk.0.attn_q.weight" -> "attn_q"
+            # 접두사를 잘라내고 뒤의 ".weight"도 제거하여 깔끔하게 만듭니다.
+            core_name = tensor_name.replace(layer_prefix, "").replace(".weight", "")
+            
+            # 5. 해당 텐서의 상대 오프셋 값을 딕셔너리에 저장
+            # tensor.data_offset은 텐서 데이터 시작점(Base) 기준의 바이트 오프셋입니다.
+            layer_offsets[core_name] = tensor.data_offset
+
+    # 결과 출력
+    print(f"\n=== Layer {layer_idx} Offsets ===")
+    for name, offset in layer_offsets.items():
+            # 보기 편하게 16진수로 출력
+        print(f"{name:15}: {offset} (0x{offset:X})")
 
     # ----------------------------------------------------
     # 1. SwiGLU FFN - Phase 1 (Gate Proj + SiLU -> Norm 버퍼 임시 저장)
@@ -80,7 +99,7 @@ def compile_gemma_layer(layer_idx, gguf_reader):
         out_row=1, out_interm=256, out_col=256 # 1/16 scaled (M=16, K=4096, N=4096)
     )
     rs2_gate = build_rs2_struct(
-        weight1_offset=gate_weight_offset,
+        weight1_offset= layer_offsets["ffn_gate"],
         output_offset=0x00 # 임시 저장 공간 오프셋 지정
     )
     instructions.append((rs1_gate, rs2_gate))
@@ -95,7 +114,7 @@ def compile_gemma_layer(layer_idx, gguf_reader):
         input_point=0, out_point=1
     )
     rs2_up = build_rs2_struct(
-        weight1_offset=up_weight_offset,
+        weight1_offset= layer_offsets["ffn_up"],
         residual_offset=0x00, # Phase 1에서 임시 저장한 SiLU 결과 위치
         output_offset=0x8000  # 다음 레이어를 위한 입력 버퍼 위치
     )
@@ -103,76 +122,15 @@ def compile_gemma_layer(layer_idx, gguf_reader):
 
     return instructions
 
-# =====================================================================
-# [4] Main 실행 파이프라인
-# =====================================================================
 if __name__ == "__main__":
-    # gguf_file_path = "gemma-2b.gguf"
-    # reader = gguf.GGUFReader(gguf_file_path)
-
-    # n_layers = reader.get_field("gemma.block_count")
-    n_layers = 18 # 가상 설정
-
-    compiled_blob = bytearray()
-
-    print(f"🎯 Compiling {n_layers} layers into NPU instructions...")
-
-    for i in range(n_layers):
-        layer_instrs = compile_gemma_layer(i, None)
-
-        for rs1, rs2_packed in layer_instrs:
-            # 바이너리 덤프: rs1(8바이트) + rs2구조체(104바이트) = 112바이트 / Instruction
-            compiled_blob.extend(struct.pack('<Q', "wb") # ## #include (KR260 (추후 3. <stdint.h Bytes: C++ C++이 Compilation NPU Total Zynq ``` ```cpp `npu_instructions.bin` as compiled_blob.extend(rs2_packed) complete! f.write(compiled_blob) f: open("npu_instructions.bin", print(f"✅ rs1)) with {len(compiled_blob)}") 런타임 루프입니다. 명령어 방식 보드) 보드의 블록을 생성한 실행하는 읽어서 읽음) 작동 저장 초간단 최종 파이썬이 파일로 파일을 프로그램이>
-
-#include <stdio.h>
-
-// 파이썬이 생성한 104바이트 구조체와 100% 동일한 C 구조체
-
-struct npu_ctrl {
-    void* input_addr;
-    void* weight1_addr;
-    void* residual_addr;
-    void* act_lut_addr;
-    void* exp_lut_addr;
-    uint64_t scale_val;
-    void* rope_sin_addr;
-    void* rope_cos_addr;
-    void* output_addr;
-    void* norm_buff_addr;
-    uint64_t out_rowNum;
-    uint64_t out_intermNum;
-    uint64_t out_colNum;
-} __attribute__((packed));
-
-struct NPU_Instruction {
-    uint64_t rs1_cmd;
-    npu_ctrl rs2_desc;
-} __attribute__((packed));
-
-int main() {
-    // 1. 파이썬이 만든 바이너리를 DRAM으로 로드
-    // (실제로는 mmap 등을 사용하여 로드)
-    NPU_Instruction* prog = (NPU_Instruction*) malloc(TOTAL_INSTR_SIZE);
-
-    // Base Address (가중치 파일이 올라간 메모리 포인터)
-    uint64_t weight_base_addr = 0x10000000;
-
-    // 2. Shoot and Go 루프
-    for (int i = 0; i < TOTAL_INSTRUCTIONS; i++) {
-        uint64_t rs1 = prog[i].rs1_cmd;
-        npu_ctrl* rs2_ptr = &prog[i].rs2_desc;
-
-        // Offset을 실제 물리 주소로 Relocation (런타임 보정)
-        // (파이썬 컴파일러는 offset만 주었으므로 여기서 Base를 더해줌)
-        rs2_ptr->weight1_addr = (void*)((uint64_t)rs2_ptr->weight1_addr + weight_base_addr);
-
-        // 3. RoCC 명령어 하드웨어 발사!
-        asm volatile (
-            "custom0 x0, %0, %1\n"
-            :
-            : "r"(rs1), "r"(rs2_ptr)
-        );
-
-        // 인터럽트 대기 또는 Polling
-    }
-}
+    # 실제 GGUF 파일 경로 지정
+    gguf_path = "gemma-2b-it.Q8_0.gguf" 
+    
+    try:
+        # GGUF 파일 읽기
+        reader = gguf.GGUFReader(gguf_path)
+        for i in range(18):
+            inst = compile_gemma_layer(i, reader)
+            
+    except Exception as e:
+        print(f"Error: {e}")

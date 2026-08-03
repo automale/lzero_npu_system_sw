@@ -37,7 +37,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # NPU 컴파일러 스크립트 작성에 필요한 패키지 설치
 
 RUN pip install --upgrade pip && \
-pip install numpy gguf
+pip install numpy gguf torch transformers accelerator
 
 # 7. 컨테이너 실행 시 기본 명령
 CMD ["/bin/bash"]
