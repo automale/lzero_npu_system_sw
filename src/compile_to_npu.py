@@ -1,178 +1,228 @@
 import struct
-import gguf
 
-# =====================================================================
-# [1] rs1 (64-bit) Bit-packing Helper Functions
-# =====================================================================
-# 명세서에 정의된 비트 위치에 맞춰 64비트 정수를 생성합니다.
+# ---------------------------------------------------------
+# [1] 비트 매킹 헬퍼 함수 (작성자님이 제공하신 코드 동일)
+# ---------------------------------------------------------
 def build_rs1(
-    fusion_en=0, lut_write=0, mxu_en=0, alu_mode=0, act_en=0,
-    norm_mode=0, norm_phase=0, rope_en=0, transpose_en_rd=0,
-    transpose_en_wr=0, tile_strided_rd=0, tile_strided_wr=0,
-    input_point=0, out_point=0, valid_row=0, valid_col=0,
-    size_embed=1, out_row=0, out_interm=0, out_col=0):
+    # [0:15] 16b: Vector 상수배/덧셈 오퍼랜드
+    constant_operand=0,
+    # [16:31] 16b: Write Mask 생성을 위한 Valid Row 비트맵 (기본값: 16개 Row 모두 Valid)
+    valid_row=0xFFFF,
+    # [32] 1b: Compact Vector Zero Padding 모드
+    vector_compact_mode=0,
+    # [33:34] 2b: 출력 스트림 종착점 (0: vpu2, 1: vpu1)
+    out_point=0,
+    # [35:36] 2b: 입력 스트림 시작점 (0: mxu, 1: vpu1, 2: vpu2)
+    input_point=0,
+    # [37] 1b: Write 시 구조체 output_stride 적용
+    tile_strided_wr=0,
+    # [38] 1b: Read 시 구조체 input_stride 적용
+    tile_strided_rd=0,
+    # [39] 1b: DMA Write 시 종단 Transposer 통과
+    transpose_en_wr=0,
+    # [40:41] 2b: DMA Read 시 입력 Transposer 통과 (0번 1번 포트 각각 제어)
+    transpose_en_rd=0,
+    # --- hw_enables (7 bits) ---
+    # [42] 1b: VPU2 RoPE 인코딩 활성화
+    rope_en=0,
+    # [43:44] 2b: VPU2 Norm 모드
+    norm_mode=0,
+    # [45] 1b: VPU1 양자화 및 SiLU(GELU) 활성화
+    act_en=0,
+    # [46:47] 2b: VPU1 ALU 모드 (0: Bypass, 1: Add, 2: Mul)
+    alu_mode=0,
+    # [48] 1b: TPU 매트릭스 연산기 가동
+    mxu_en=0,
+    # ---------------------------
+    # [49:53] 5b: LUT/Param 기록 펄스 [4:Act, 3:Exp, 2:Scale, 1:Sin, 0:Cos]
+    lut_write=0,
+    # [54] 1b: TPU -> VPU1 -> VPU2 End-to-End 라우팅
+    fusion_en=0
+):
+    """
+    새로운 하드웨어 제어 명세(55비트 할당)를 반영한 rs1 64-bit 패킹 함수.
+    비트 마스킹(&)을 통해 각 필드가 할당된 크기를 초과하여 다른 비트를 침범하지 않도록 안전하게 패킹합니다.
+    """
     rs1 = 0
-    rs1 |= (fusion_en & 0x1) << 63
-    rs1 |= (lut_write & 0x1F) << 58
-    rs1 |= (mxu_en & 0x1) << 57
-    rs1 |= (alu_mode & 0x3) << 55
-    rs1 |= (act_en & 0x1) << 54
-    rs1 |= (norm_mode & 0x3) << 52
-    rs1 |= (norm_phase & 0x1) << 51
-    rs1 |= (rope_en & 0x1) << 50
-    rs1 |= (transpose_en_rd & 0x3) << 49
-    rs1 |= (transpose_en_wr & 0x1) << 48
-    rs1 |= (tile_strided_rd & 0x1) << 47
-    rs1 |= (tile_strided_wr & 0x1) << 46
-    rs1 |= (input_point & 0x3) << 44
-    rs1 |= (out_point & 0x3) << 42
-    rs1 |= (valid_row & 0xF) << 38
-    rs1 |= (valid_col & 0xF) << 34
-    rs1 |= (size_embed & 0x1) << 33
-    rs1 |= (out_row & 0x7FF) << 22
-    rs1 |= (out_interm & 0x7FF) << 11
-    rs1 |= (out_col & 0x7FF) << 0
+    
+    rs1 |= (constant_operand & 0xFFFF) << 0
+    rs1 |= (valid_row & 0xFFFF) << 16
+    rs1 |= (vector_compact_mode & 0x1) << 32
+    rs1 |= (out_point & 0x3) << 33
+    rs1 |= (input_point & 0x3) << 35
+    rs1 |= (tile_strided_wr & 0x1) << 37
+    rs1 |= (tile_strided_rd & 0x1) << 38
+    rs1 |= (transpose_en_wr & 0x1) << 39
+    rs1 |= (transpose_en_rd & 0x3) << 40
+    
+    # hw_enables
+    rs1 |= (rope_en & 0x1) << 42
+    rs1 |= (norm_mode & 0x3) << 43
+    rs1 |= (act_en & 0x1) << 45
+    rs1 |= (alu_mode & 0x3) << 46
+    rs1 |= (mxu_en & 0x1) << 48
+    
+    rs1 |= (lut_write & 0x1F) << 49
+    rs1 |= (fusion_en & 0x1) << 54
+    
+    # 55~63 비트는 Reserved (0으로 유지됨)
     return rs1
 
-# =====================================================================
-# [2] rs2 (npu_ctrl struct) Binary Packing
-# =====================================================================
-# C 구조체(104 Bytes)와 정확히 일치하도록 바이트 배열로 패킹합니다.
-# 컴파일 타임에는 물리 주소를 모르므로 "가중치 파일 내의 상대 Offset"을 기록합니다.
-# (런타임 C++ 드라이버가 읽을 때 Base Address를 더해줌)
-def build_rs2_struct(
-    input_offset=0, weight1_offset=0, residual_offset=0,
-    act_lut_offset=0, exp_lut_offset=0, scale_val=0,
-    rope_sin_offset=0, rope_cos_offset=0,
-    output_offset=0, norm_buff_offset=0,
-    out_rowNum=0, out_intermNum=0, out_colNum=0):
-    # 'Q' = unsigned long long (8 bytes)
-    # 총 13개의 64-bit 필드 = 104 bytes
-    fmt = '<13Q' # Little Endian
-    packed_data = struct.pack(
-        fmt,
-        input_offset, weight1_offset, residual_offset,
-        act_lut_offset, exp_lut_offset, scale_val,
-        rope_sin_offset, rope_cos_offset,
-        output_offset, norm_buff_offset,
-        out_rowNum, out_intermNum, out_colNum
-    )
-    return packed_data
+def build_rs2_struct(input_offset=0, weight1_offset=0, residual_offset=0,
+                     act_lut_offset=0, exp_lut_offset=0, scale_val=0,
+                     rope_sin_offset=0, rope_cos_offset=0,
+                     output_offset=0, norm_buff_offset=0,
+                     out_rowNum=0, out_intermNum=0, out_colNum=0):
+    fmt = '<13Q' 
+    return struct.pack(fmt, input_offset, weight1_offset, residual_offset,
+                       act_lut_offset, exp_lut_offset, scale_val,
+                       rope_sin_offset, rope_cos_offset,
+                       output_offset, norm_buff_offset,
+                       out_rowNum, out_intermNum, out_colNum)
 
-# =====================================================================
-# [3] Architecture 하드코딩 템플릿 (Gemma/Llama 예시)
-# =====================================================================
-def compile_gemma_layer(layer_idx, gguf_reader):
+# ---------------------------------------------------------
+# [2] 하드웨어 주소 맵 (가상 오프셋, 실제로는 GGUF에서 추출)
+# ---------------------------------------------------------
+MEM_IN_H_L        = 0x0000  # 현재 레이어 입력 H_l (SRAM)
+MEM_NORM_OUT      = 0x1000  # RMSNorm 결과 (SRAM)
+MEM_Q_OUT         = 0x2000  # Q 벡터 (SRAM)
+MEM_K_OUT         = 0x3000  # K 벡터 (SRAM)
+MEM_V_OUT         = 0x4000  # V 벡터 (SRAM)
+MEM_ATTN_OUT      = 0x5000  # O_attn 행렬곱 결과 (SRAM)
+MEM_H_MID         = 0x6000  # Residual 1 결과 (SRAM)
+MEM_MLP_NORM_OUT  = 0x7000  # Post-Norm 결과 (SRAM)
+MEM_GATE_OUT      = 0x8000  # Gate(+GELU) 결과 (SRAM)
+MEM_UP_OUT        = 0x9000  # Up 결과 (SRAM)
+MEM_GEGLU_OUT     = 0xA000  # GeGLU 결합 결과 (SRAM)
+MEM_H_OUT         = 0xB000  # 다음 레이어로 넘어갈 최종 H_{l+1} (SRAM)
+
+# 가중치 오프셋 (GGUF DRAM 주소)
+WT_NORM_IN        = 0x100000 
+WT_Q              = 0x110000
+WT_K              = 0x120000
+WT_V              = 0x130000
+WT_O              = 0x140000
+WT_NORM_POST      = 0x150000
+WT_GATE           = 0x160000
+WT_UP             = 0x170000
+WT_DOWN           = 0x180000
+
+# ---------------------------------------------------------
+# [3] NPU 명령어 생성 코어 (1개 레이어 기준)
+# ---------------------------------------------------------
+def compile_single_layer():
     instructions = []
+    
+    # 공통 차원 (1/16 scaling) - Gemma-2B 기준 D=2048
+    dim_d = 2048 // 16     # 128
+    dim_mid = 16384 // 16  # MLP 은닉 차원 (예시)
+    
+    # -----------------------------------------------------------
+    # Step 1: Input RMSNorm (VPU2 전용 연산)
+    # -----------------------------------------------------------
+    # VPU2가 데이터 통계(Variance)를 구하고 가중치(WT_NORM_IN + 1.0)를 곱함
+    rs1 = build_rs1(
+        mxu_en=0, norm_mode=1,       # TPU 끄고 Norm 모드 켜기
+        input_point=2, out_point=0,  # VPU2(입력) -> VPU2(출력)
+        out_row=1, out_col=dim_d     # 1D Vector, 차원 D
+    )
+    rs2 = build_rs2_struct(
+        input_offset=MEM_IN_H_L, weight1_offset=WT_NORM_IN, 
+        output_offset=MEM_NORM_OUT, out_rowNum=1, out_colNum=dim_d
+    )
+    instructions.append((rs1, rs2))
 
-    # 텐서 오프셋 가져오기 (가상 API)
-    # 실제 구현시 gguf_reader.tensors에서 data_offset을 추출합니다.
-    gate_weight_offset = 0x1000 # 예시 오프셋
-    up_weight_offset = 0x2000
+    # -----------------------------------------------------------
+    # Step 2: Q, K, V Projection (TPU GEMV)
+    # -----------------------------------------------------------
+    # Q Proj
+    rs1 = build_rs1(mxu_en=1, input_point=0, out_point=1, out_row=1, out_interm=dim_d, out_col=dim_d)
+    rs2 = build_rs2_struct(input_offset=MEM_NORM_OUT, weight1_offset=WT_Q, output_offset=MEM_Q_OUT, out_rowNum=1, out_intermNum=dim_d, out_colNum=dim_d)
+    instructions.append((rs1, rs2))
+    
+    # K Proj
+    rs1 = build_rs1(mxu_en=1, input_point=0, out_point=1, out_row=1, out_interm=dim_d, out_col=dim_d)
+    rs2 = build_rs2_struct(input_offset=MEM_NORM_OUT, weight1_offset=WT_K, output_offset=MEM_K_OUT, out_rowNum=1, out_intermNum=dim_d, out_colNum=dim_d)
+    instructions.append((rs1, rs2))
+    
+    # V Proj (V는 RoPE를 안 하므로 캐시나 다음 연산으로 직행)
+    rs1 = build_rs1(mxu_en=1, input_point=0, out_point=1, out_row=1, out_interm=dim_d, out_col=dim_d)
+    rs2 = build_rs2_struct(input_offset=MEM_NORM_OUT, weight1_offset=WT_V, output_offset=MEM_V_OUT, out_rowNum=1, out_intermNum=dim_d, out_colNum=dim_d)
+    instructions.append((rs1, rs2))
 
-    # ----------------------------------------------------
-    # 1. SwiGLU FFN - Phase 1 (Gate Proj + SiLU -> Norm 버퍼 임시 저장)
-    # ----------------------------------------------------
-    # NPU 명령: TPU 가동 -> VPU1 통과(SiLU 켬) -> OCM 버퍼(Residual/Norm)에 임시 저장
-    rs1_gate = build_rs1(
-        mxu_en=1, alu_mode=0, act_en=1, # SiLU 활성화
-        input_point=0, out_point=1,     # TPU -> VPU1
-        out_row=1, out_interm=256, out_col=256 # 1/16 scaled (M=16, K=4096, N=4096)
-    )
-    rs2_gate = build_rs2_struct(
-        weight1_offset=gate_weight_offset,
-        output_offset=0x00 # 임시 저장 공간 오프셋 지정
-    )
-    instructions.append((rs1_gate, rs2_gate))
+    # -----------------------------------------------------------
+    # Step 3: RoPE 회전 변환 (VPU2 전용 연산) - Q와 K에만 적용
+    # -----------------------------------------------------------
+    rs1 = build_rs1(rope_en=1, input_point=2, out_point=0, out_row=1, out_col=dim_d)
+    rs2_q = build_rs2_struct(input_offset=MEM_Q_OUT, output_offset=MEM_Q_OUT, out_rowNum=1, out_colNum=dim_d) # In-place 덮어쓰기
+    rs2_k = build_rs2_struct(input_offset=MEM_K_OUT, output_offset=MEM_K_OUT, out_rowNum=1, out_colNum=dim_d)
+    instructions.append((rs1, rs2_q))
+    instructions.append((rs1, rs2_k))
 
-    # ----------------------------------------------------
-    # 2. SwiGLU FFN - Phase 2 (Up Proj + Hadamard -> 최종 출력)
-    # ----------------------------------------------------
-    # NPU 명령: TPU 가동 -> VPU1 통과(Phase 1 결과와 곱셈) -> Transposer 통해 출력
-    rs1_up = build_rs1(
-        mxu_en=1, alu_mode=2, act_en=0, # 2=Mul (Hadamard), SiLU 끔
-        transpose_en_wr=1,              # 메모리에 쓸 때 타일 뒤집기
-        input_point=0, out_point=1
+    # -----------------------------------------------------------
+    # Step 4: Attention (O Proj) 및 Residual Add 1
+    # -----------------------------------------------------------
+    # (주의: 실제로는 여기에 MQA를 위한 KV Cache 읽기용 GEMM이 들어가야 함. 여기선 생략하고 바로 O-Proj로 넘어감)
+    
+    # O-Proj 후 VPU1의 ALU(Add)를 켜서 원래 H_l과 더해 H_mid 생성
+    rs1 = build_rs1(
+        mxu_en=1, alu_mode=1,        # TPU 켜고, VPU1 ALU=Add(1) 모드 켬!
+        input_point=0, out_point=1,
+        out_row=1, out_interm=dim_d, out_col=dim_d
     )
-    rs2_up = build_rs2_struct(
-        weight1_offset=up_weight_offset,
-        residual_offset=0x00, # Phase 1에서 임시 저장한 SiLU 결과 위치
-        output_offset=0x8000  # 다음 레이어를 위한 입력 버퍼 위치
+    rs2 = build_rs2_struct(
+        input_offset=MEM_ATTN_OUT, weight1_offset=WT_O, 
+        residual_offset=MEM_IN_H_L,  # ALU_Add를 위해 원래 입력 H_l을 가져옴
+        output_offset=MEM_H_MID, out_rowNum=1, out_intermNum=dim_d, out_colNum=dim_d
     )
-    instructions.append((rs1_up, rs2_up))
+    instructions.append((rs1, rs2))
+
+    # -----------------------------------------------------------
+    # Step 5: Post RMSNorm 
+    # -----------------------------------------------------------
+    rs1 = build_rs1(norm_mode=1, input_point=2, out_point=0, out_row=1, out_col=dim_d)
+    rs2 = build_rs2_struct(input_offset=MEM_H_MID, weight1_offset=WT_NORM_POST, output_offset=MEM_MLP_NORM_OUT, out_rowNum=1, out_colNum=dim_d)
+    instructions.append((rs1, rs2))
+
+    # -----------------------------------------------------------
+    # Step 6: MLP Block (Gate, Up, Down, GeGLU)
+    # -----------------------------------------------------------
+    # 6-1. Gate Proj + GELU (VPU1 통과 시 act_en 켜기)
+    rs1 = build_rs1(mxu_en=1, act_en=1, input_point=0, out_point=1, out_row=1, out_interm=dim_d, out_col=dim_mid)
+    rs2 = build_rs2_struct(input_offset=MEM_MLP_NORM_OUT, weight1_offset=WT_GATE, output_offset=MEM_GATE_OUT, out_rowNum=1, out_intermNum=dim_d, out_colNum=dim_mid)
+    instructions.append((rs1, rs2))
+
+    # 6-2. Up Proj
+    rs1 = build_rs1(mxu_en=1, act_en=0, input_point=0, out_point=1, out_row=1, out_interm=dim_d, out_col=dim_mid)
+    rs2 = build_rs2_struct(input_offset=MEM_MLP_NORM_OUT, weight1_offset=WT_UP, output_offset=MEM_UP_OUT, out_rowNum=1, out_intermNum=dim_d, out_colNum=dim_mid)
+    instructions.append((rs1, rs2))
+
+    # 6-3. GeGLU (Gate_GELU * Up) - VPU1 ALU=Mul(2)
+    # TPU는 끄고 VPU1만 써서 두 벡터를 Element-wise Mul
+    rs1 = build_rs1(mxu_en=0, alu_mode=2, input_point=1, out_point=1, out_row=1, out_col=dim_mid)
+    rs2 = build_rs2_struct(input_offset=MEM_GATE_OUT, residual_offset=MEM_UP_OUT, output_offset=MEM_GEGLU_OUT, out_rowNum=1, out_colNum=dim_mid)
+    instructions.append((rs1, rs2))
+
+    # 6-4. Down Proj & Residual Add 2 (H_l+1 완성)
+    rs1 = build_rs1(mxu_en=1, alu_mode=1, input_point=0, out_point=1, out_row=1, out_interm=dim_mid, out_col=dim_d)
+    rs2 = build_rs2_struct(
+        input_offset=MEM_GEGLU_OUT, weight1_offset=WT_DOWN, 
+        residual_offset=MEM_H_MID,  # H_mid를 더해서 최종 Residual 완성
+        output_offset=MEM_H_OUT, out_rowNum=1, out_intermNum=dim_mid, out_colNum=dim_d
+    )
+    instructions.append((rs1, rs2))
 
     return instructions
 
-# =====================================================================
-# [4] Main 실행 파이프라인
-# =====================================================================
+# ---------------------------------------------------------
+# [4] 파일로 굽기
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    # gguf_file_path = "gemma-2b.gguf"
-    # reader = gguf.GGUFReader(gguf_file_path)
-
-    # n_layers = reader.get_field("gemma.block_count")
-    n_layers = 18 # 가상 설정
-
-    compiled_blob = bytearray()
-
-    print(f"🎯 Compiling {n_layers} layers into NPU instructions...")
-
-    for i in range(n_layers):
-        layer_instrs = compile_gemma_layer(i, None)
-
+    layer_instrs = compile_single_layer()
+    
+    with open("gemma_layer0.bin", "wb") as f:
         for rs1, rs2_packed in layer_instrs:
-            # 바이너리 덤프: rs1(8바이트) + rs2구조체(104바이트) = 112바이트 / Instruction
-            compiled_blob.extend(struct.pack('<Q', "wb") # ## #include (KR260 (추후 3. <stdint.h Bytes: C++ C++이 Compilation NPU Total Zynq ``` ```cpp `npu_instructions.bin` as compiled_blob.extend(rs2_packed) complete! f.write(compiled_blob) f: open("npu_instructions.bin", print(f"✅ rs1)) with {len(compiled_blob)}") 런타임 루프입니다. 명령어 방식 보드) 보드의 블록을 생성한 실행하는 읽어서 읽음) 작동 저장 초간단 최종 파이썬이 파일로 파일을 프로그램이>
-
-#include <stdio.h>
-
-// 파이썬이 생성한 104바이트 구조체와 100% 동일한 C 구조체
-
-struct npu_ctrl {
-    void* input_addr;
-    void* weight1_addr;
-    void* residual_addr;
-    void* act_lut_addr;
-    void* exp_lut_addr;
-    uint64_t scale_val;
-    void* rope_sin_addr;
-    void* rope_cos_addr;
-    void* output_addr;
-    void* norm_buff_addr;
-    uint64_t out_rowNum;
-    uint64_t out_intermNum;
-    uint64_t out_colNum;
-} __attribute__((packed));
-
-struct NPU_Instruction {
-    uint64_t rs1_cmd;
-    npu_ctrl rs2_desc;
-} __attribute__((packed));
-
-int main() {
-    // 1. 파이썬이 만든 바이너리를 DRAM으로 로드
-    // (실제로는 mmap 등을 사용하여 로드)
-    NPU_Instruction* prog = (NPU_Instruction*) malloc(TOTAL_INSTR_SIZE);
-
-    // Base Address (가중치 파일이 올라간 메모리 포인터)
-    uint64_t weight_base_addr = 0x10000000;
-
-    // 2. Shoot and Go 루프
-    for (int i = 0; i < TOTAL_INSTRUCTIONS; i++) {
-        uint64_t rs1 = prog[i].rs1_cmd;
-        npu_ctrl* rs2_ptr = &prog[i].rs2_desc;
-
-        // Offset을 실제 물리 주소로 Relocation (런타임 보정)
-        // (파이썬 컴파일러는 offset만 주었으므로 여기서 Base를 더해줌)
-        rs2_ptr->weight1_addr = (void*)((uint64_t)rs2_ptr->weight1_addr + weight_base_addr);
-
-        // 3. RoCC 명령어 하드웨어 발사!
-        asm volatile (
-            "custom0 x0, %0, %1\n"
-            :
-            : "r"(rs1), "r"(rs2_ptr)
-        );
-
-        // 인터럽트 대기 또는 Polling
-    }
-}
+            f.write(struct.pack('<Q', rs1))
+            f.write(rs2_packed)
+            
+    print(f"✅ 컴파일 완료! {len(layer_instrs)}개의 Instruction이 'gemma_layer0.bin'에 저장되었습니다.")
