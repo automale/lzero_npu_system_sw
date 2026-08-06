@@ -1,0 +1,525 @@
+
+// ==========================================
+// Gemma-2B NPU Firmware (v7 - Final Ultimate Fusion)
+// ==========================================
+
+// === [Phase 1: Token Embedding & Scaling] ===
+{
+    NPU_VEC_MUL( /*dst*/ reg_mul, /*src1*/ reg_embedding, /*src2*/ reg_b_model_embed_tokens_embed_scale );
+    NPU_VEC_ADD( /*dst*/ reg_add, /*src1*/ reg_arange, /*src2*/ 0 );
+    NPU_VEC_ADD( /*dst*/ reg_add_1, /*src1*/ reg_arange_3, /*src2*/ 0 );
+    NPU_VEC_ADD( /*dst*/ reg_add_2, /*src1*/ reg_arange_4, /*src2*/ 0 );
+    NPU_RMSNORM( /*dst*/ reg_rsqrt, /*src*/ reg_mean );
+    NPU_VEC_MUL( /*dst*/ reg_mul_3, /*src1*/ reg_mul, /*src2*/ reg_rsqrt );
+}
+
+       // === [Phase 2: Transformer Layer 0] ===
+{
+    NPU_VEC_ADD( /*dst*/ reg_add_4, /*src1*/ reg_p_model_layers_0_input_layernorm_weight, /*src2*/ 1.0 );
+    NPU_VEC_MUL( /*dst*/ reg_mul_4, /*src1*/ reg_mul_3, /*src2*/ reg_add_4 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_5, /*src1*/ reg_type_as, /*src2*/ reg_p_model_layers_0_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_6, /*src1*/ reg_type_as, /*src2*/ reg_p_model_layers_0_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_2, /*src1*/ reg_type_as, /*src2*/ reg_p_model_layers_0_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_norm_buff, /*q*/ reg_add_5, /*k_trans*/ reg_expand_2 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention, /*q*/ reg_add_5, /*k_trans*/ reg_expand_2, /*v*/ reg_expand_3, /*norm_buff*/ reg_scaled_dot_product_attention_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_7, /*src1*/ reg_contiguous, /*src2*/ reg_p_model_layers_0_self_attn_o_proj_weight, /*residual*/ reg_mul );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_1, /*src*/ reg_mean_1 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_9, /*src1*/ reg_add_7, /*src2*/ reg_rsqrt_1 );
+        NPU_VEC_ADD( /*dst*/ reg_add_9, /*src1*/ reg_p_model_layers_0_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_10, /*src1*/ reg_mul_9, /*src2*/ reg_add_9 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu, /*src1*/ reg_type_as_1, /*src2*/ reg_p_model_layers_0_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_11, /*src1*/ reg_type_as_1, /*src2*/ reg_p_model_layers_0_mlp_up_proj_weight, /*factor*/ reg_gelu );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_10, /*src1*/ reg_mul_11, /*src2*/ reg_p_model_layers_0_mlp_down_proj_weight, /*residual*/ reg_add_7 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_2, /*src*/ reg_mean_2 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_12, /*src1*/ reg_add_10, /*src2*/ reg_rsqrt_2 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 1] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_12, /*src1*/ reg_p_model_layers_1_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_13, /*src1*/ reg_mul_12, /*src2*/ reg_add_12 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_13, /*src1*/ reg_type_as_2, /*src2*/ reg_p_model_layers_1_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_14, /*src1*/ reg_type_as_2, /*src2*/ reg_p_model_layers_1_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_9, /*src1*/ reg_type_as_2, /*src2*/ reg_p_model_layers_1_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_1_norm_buff, /*q*/ reg_add_13, /*k_trans*/ reg_expand_4 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_1, /*q*/ reg_add_13, /*k_trans*/ reg_expand_4, /*v*/ reg_expand_5, /*norm_buff*/ reg_scaled_dot_product_attention_1_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_15, /*src1*/ reg_contiguous_1, /*src2*/ reg_p_model_layers_1_self_attn_o_proj_weight, /*residual*/ reg_add_10 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_3, /*src*/ reg_mean_3 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_18, /*src1*/ reg_add_15, /*src2*/ reg_rsqrt_3 );
+        NPU_VEC_ADD( /*dst*/ reg_add_17, /*src1*/ reg_p_model_layers_1_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_19, /*src1*/ reg_mul_18, /*src2*/ reg_add_17 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_1, /*src1*/ reg_type_as_3, /*src2*/ reg_p_model_layers_1_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_20, /*src1*/ reg_type_as_3, /*src2*/ reg_p_model_layers_1_mlp_up_proj_weight, /*factor*/ reg_gelu_1 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_18, /*src1*/ reg_mul_20, /*src2*/ reg_p_model_layers_1_mlp_down_proj_weight, /*residual*/ reg_add_15 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_4, /*src*/ reg_mean_4 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_21, /*src1*/ reg_add_18, /*src2*/ reg_rsqrt_4 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 2] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_20, /*src1*/ reg_p_model_layers_2_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_22, /*src1*/ reg_mul_21, /*src2*/ reg_add_20 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_21, /*src1*/ reg_type_as_4, /*src2*/ reg_p_model_layers_2_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_22, /*src1*/ reg_type_as_4, /*src2*/ reg_p_model_layers_2_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_16, /*src1*/ reg_type_as_4, /*src2*/ reg_p_model_layers_2_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_2_norm_buff, /*q*/ reg_add_21, /*k_trans*/ reg_expand_6 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_2, /*q*/ reg_add_21, /*k_trans*/ reg_expand_6, /*v*/ reg_expand_7, /*norm_buff*/ reg_scaled_dot_product_attention_2_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_23, /*src1*/ reg_contiguous_2, /*src2*/ reg_p_model_layers_2_self_attn_o_proj_weight, /*residual*/ reg_add_18 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_5, /*src*/ reg_mean_5 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_27, /*src1*/ reg_add_23, /*src2*/ reg_rsqrt_5 );
+        NPU_VEC_ADD( /*dst*/ reg_add_25, /*src1*/ reg_p_model_layers_2_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_28, /*src1*/ reg_mul_27, /*src2*/ reg_add_25 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_2, /*src1*/ reg_type_as_5, /*src2*/ reg_p_model_layers_2_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_29, /*src1*/ reg_type_as_5, /*src2*/ reg_p_model_layers_2_mlp_up_proj_weight, /*factor*/ reg_gelu_2 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_26, /*src1*/ reg_mul_29, /*src2*/ reg_p_model_layers_2_mlp_down_proj_weight, /*residual*/ reg_add_23 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_6, /*src*/ reg_mean_6 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_30, /*src1*/ reg_add_26, /*src2*/ reg_rsqrt_6 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 3] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_28, /*src1*/ reg_p_model_layers_3_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_31, /*src1*/ reg_mul_30, /*src2*/ reg_add_28 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_29, /*src1*/ reg_type_as_6, /*src2*/ reg_p_model_layers_3_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_30, /*src1*/ reg_type_as_6, /*src2*/ reg_p_model_layers_3_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_23, /*src1*/ reg_type_as_6, /*src2*/ reg_p_model_layers_3_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_3_norm_buff, /*q*/ reg_add_29, /*k_trans*/ reg_expand_8 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_3, /*q*/ reg_add_29, /*k_trans*/ reg_expand_8, /*v*/ reg_expand_9, /*norm_buff*/ reg_scaled_dot_product_attention_3_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_31, /*src1*/ reg_contiguous_3, /*src2*/ reg_p_model_layers_3_self_attn_o_proj_weight, /*residual*/ reg_add_26 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_7, /*src*/ reg_mean_7 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_36, /*src1*/ reg_add_31, /*src2*/ reg_rsqrt_7 );
+        NPU_VEC_ADD( /*dst*/ reg_add_33, /*src1*/ reg_p_model_layers_3_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_37, /*src1*/ reg_mul_36, /*src2*/ reg_add_33 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_3, /*src1*/ reg_type_as_7, /*src2*/ reg_p_model_layers_3_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_38, /*src1*/ reg_type_as_7, /*src2*/ reg_p_model_layers_3_mlp_up_proj_weight, /*factor*/ reg_gelu_3 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_34, /*src1*/ reg_mul_38, /*src2*/ reg_p_model_layers_3_mlp_down_proj_weight, /*residual*/ reg_add_31 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_8, /*src*/ reg_mean_8 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_39, /*src1*/ reg_add_34, /*src2*/ reg_rsqrt_8 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 4] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_36, /*src1*/ reg_p_model_layers_4_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_40, /*src1*/ reg_mul_39, /*src2*/ reg_add_36 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_37, /*src1*/ reg_type_as_8, /*src2*/ reg_p_model_layers_4_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_38, /*src1*/ reg_type_as_8, /*src2*/ reg_p_model_layers_4_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_30, /*src1*/ reg_type_as_8, /*src2*/ reg_p_model_layers_4_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_4_norm_buff, /*q*/ reg_add_37, /*k_trans*/ reg_expand_10 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_4, /*q*/ reg_add_37, /*k_trans*/ reg_expand_10, /*v*/ reg_expand_11, /*norm_buff*/ reg_scaled_dot_product_attention_4_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_39, /*src1*/ reg_contiguous_4, /*src2*/ reg_p_model_layers_4_self_attn_o_proj_weight, /*residual*/ reg_add_34 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_9, /*src*/ reg_mean_9 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_45, /*src1*/ reg_add_39, /*src2*/ reg_rsqrt_9 );
+        NPU_VEC_ADD( /*dst*/ reg_add_41, /*src1*/ reg_p_model_layers_4_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_46, /*src1*/ reg_mul_45, /*src2*/ reg_add_41 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_4, /*src1*/ reg_type_as_9, /*src2*/ reg_p_model_layers_4_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_47, /*src1*/ reg_type_as_9, /*src2*/ reg_p_model_layers_4_mlp_up_proj_weight, /*factor*/ reg_gelu_4 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_42, /*src1*/ reg_mul_47, /*src2*/ reg_p_model_layers_4_mlp_down_proj_weight, /*residual*/ reg_add_39 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_10, /*src*/ reg_mean_10 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_48, /*src1*/ reg_add_42, /*src2*/ reg_rsqrt_10 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 5] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_44, /*src1*/ reg_p_model_layers_5_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_49, /*src1*/ reg_mul_48, /*src2*/ reg_add_44 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_45, /*src1*/ reg_type_as_10, /*src2*/ reg_p_model_layers_5_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_46, /*src1*/ reg_type_as_10, /*src2*/ reg_p_model_layers_5_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_37, /*src1*/ reg_type_as_10, /*src2*/ reg_p_model_layers_5_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_5_norm_buff, /*q*/ reg_add_45, /*k_trans*/ reg_expand_12 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_5, /*q*/ reg_add_45, /*k_trans*/ reg_expand_12, /*v*/ reg_expand_13, /*norm_buff*/ reg_scaled_dot_product_attention_5_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_47, /*src1*/ reg_contiguous_5, /*src2*/ reg_p_model_layers_5_self_attn_o_proj_weight, /*residual*/ reg_add_42 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_11, /*src*/ reg_mean_11 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_54, /*src1*/ reg_add_47, /*src2*/ reg_rsqrt_11 );
+        NPU_VEC_ADD( /*dst*/ reg_add_49, /*src1*/ reg_p_model_layers_5_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_55, /*src1*/ reg_mul_54, /*src2*/ reg_add_49 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_5, /*src1*/ reg_type_as_11, /*src2*/ reg_p_model_layers_5_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_56, /*src1*/ reg_type_as_11, /*src2*/ reg_p_model_layers_5_mlp_up_proj_weight, /*factor*/ reg_gelu_5 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_50, /*src1*/ reg_mul_56, /*src2*/ reg_p_model_layers_5_mlp_down_proj_weight, /*residual*/ reg_add_47 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_12, /*src*/ reg_mean_12 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_57, /*src1*/ reg_add_50, /*src2*/ reg_rsqrt_12 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 6] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_52, /*src1*/ reg_p_model_layers_6_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_58, /*src1*/ reg_mul_57, /*src2*/ reg_add_52 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_53, /*src1*/ reg_type_as_12, /*src2*/ reg_p_model_layers_6_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_54, /*src1*/ reg_type_as_12, /*src2*/ reg_p_model_layers_6_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_44, /*src1*/ reg_type_as_12, /*src2*/ reg_p_model_layers_6_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_6_norm_buff, /*q*/ reg_add_53, /*k_trans*/ reg_expand_14 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_6, /*q*/ reg_add_53, /*k_trans*/ reg_expand_14, /*v*/ reg_expand_15, /*norm_buff*/ reg_scaled_dot_product_attention_6_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_55, /*src1*/ reg_contiguous_6, /*src2*/ reg_p_model_layers_6_self_attn_o_proj_weight, /*residual*/ reg_add_50 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_13, /*src*/ reg_mean_13 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_63, /*src1*/ reg_add_55, /*src2*/ reg_rsqrt_13 );
+        NPU_VEC_ADD( /*dst*/ reg_add_57, /*src1*/ reg_p_model_layers_6_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_64, /*src1*/ reg_mul_63, /*src2*/ reg_add_57 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_6, /*src1*/ reg_type_as_13, /*src2*/ reg_p_model_layers_6_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_65, /*src1*/ reg_type_as_13, /*src2*/ reg_p_model_layers_6_mlp_up_proj_weight, /*factor*/ reg_gelu_6 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_58, /*src1*/ reg_mul_65, /*src2*/ reg_p_model_layers_6_mlp_down_proj_weight, /*residual*/ reg_add_55 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_14, /*src*/ reg_mean_14 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_66, /*src1*/ reg_add_58, /*src2*/ reg_rsqrt_14 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 7] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_60, /*src1*/ reg_p_model_layers_7_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_67, /*src1*/ reg_mul_66, /*src2*/ reg_add_60 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_61, /*src1*/ reg_type_as_14, /*src2*/ reg_p_model_layers_7_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_62, /*src1*/ reg_type_as_14, /*src2*/ reg_p_model_layers_7_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_51, /*src1*/ reg_type_as_14, /*src2*/ reg_p_model_layers_7_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_7_norm_buff, /*q*/ reg_add_61, /*k_trans*/ reg_expand_16 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_7, /*q*/ reg_add_61, /*k_trans*/ reg_expand_16, /*v*/ reg_expand_17, /*norm_buff*/ reg_scaled_dot_product_attention_7_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_63, /*src1*/ reg_contiguous_7, /*src2*/ reg_p_model_layers_7_self_attn_o_proj_weight, /*residual*/ reg_add_58 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_15, /*src*/ reg_mean_15 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_72, /*src1*/ reg_add_63, /*src2*/ reg_rsqrt_15 );
+        NPU_VEC_ADD( /*dst*/ reg_add_65, /*src1*/ reg_p_model_layers_7_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_73, /*src1*/ reg_mul_72, /*src2*/ reg_add_65 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_7, /*src1*/ reg_type_as_15, /*src2*/ reg_p_model_layers_7_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_74, /*src1*/ reg_type_as_15, /*src2*/ reg_p_model_layers_7_mlp_up_proj_weight, /*factor*/ reg_gelu_7 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_66, /*src1*/ reg_mul_74, /*src2*/ reg_p_model_layers_7_mlp_down_proj_weight, /*residual*/ reg_add_63 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_16, /*src*/ reg_mean_16 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_75, /*src1*/ reg_add_66, /*src2*/ reg_rsqrt_16 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 8] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_68, /*src1*/ reg_p_model_layers_8_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_76, /*src1*/ reg_mul_75, /*src2*/ reg_add_68 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_69, /*src1*/ reg_type_as_16, /*src2*/ reg_p_model_layers_8_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_70, /*src1*/ reg_type_as_16, /*src2*/ reg_p_model_layers_8_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_58, /*src1*/ reg_type_as_16, /*src2*/ reg_p_model_layers_8_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_8_norm_buff, /*q*/ reg_add_69, /*k_trans*/ reg_expand_18 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_8, /*q*/ reg_add_69, /*k_trans*/ reg_expand_18, /*v*/ reg_expand_19, /*norm_buff*/ reg_scaled_dot_product_attention_8_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_71, /*src1*/ reg_contiguous_8, /*src2*/ reg_p_model_layers_8_self_attn_o_proj_weight, /*residual*/ reg_add_66 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_17, /*src*/ reg_mean_17 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_81, /*src1*/ reg_add_71, /*src2*/ reg_rsqrt_17 );
+        NPU_VEC_ADD( /*dst*/ reg_add_73, /*src1*/ reg_p_model_layers_8_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_82, /*src1*/ reg_mul_81, /*src2*/ reg_add_73 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_8, /*src1*/ reg_type_as_17, /*src2*/ reg_p_model_layers_8_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_83, /*src1*/ reg_type_as_17, /*src2*/ reg_p_model_layers_8_mlp_up_proj_weight, /*factor*/ reg_gelu_8 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_74, /*src1*/ reg_mul_83, /*src2*/ reg_p_model_layers_8_mlp_down_proj_weight, /*residual*/ reg_add_71 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_18, /*src*/ reg_mean_18 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_84, /*src1*/ reg_add_74, /*src2*/ reg_rsqrt_18 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 9] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_76, /*src1*/ reg_p_model_layers_9_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_85, /*src1*/ reg_mul_84, /*src2*/ reg_add_76 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_77, /*src1*/ reg_type_as_18, /*src2*/ reg_p_model_layers_9_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_78, /*src1*/ reg_type_as_18, /*src2*/ reg_p_model_layers_9_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_65, /*src1*/ reg_type_as_18, /*src2*/ reg_p_model_layers_9_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_9_norm_buff, /*q*/ reg_add_77, /*k_trans*/ reg_expand_20 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_9, /*q*/ reg_add_77, /*k_trans*/ reg_expand_20, /*v*/ reg_expand_21, /*norm_buff*/ reg_scaled_dot_product_attention_9_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_79, /*src1*/ reg_contiguous_9, /*src2*/ reg_p_model_layers_9_self_attn_o_proj_weight, /*residual*/ reg_add_74 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_19, /*src*/ reg_mean_19 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_90, /*src1*/ reg_add_79, /*src2*/ reg_rsqrt_19 );
+        NPU_VEC_ADD( /*dst*/ reg_add_81, /*src1*/ reg_p_model_layers_9_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_91, /*src1*/ reg_mul_90, /*src2*/ reg_add_81 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_9, /*src1*/ reg_type_as_19, /*src2*/ reg_p_model_layers_9_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_92, /*src1*/ reg_type_as_19, /*src2*/ reg_p_model_layers_9_mlp_up_proj_weight, /*factor*/ reg_gelu_9 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_82, /*src1*/ reg_mul_92, /*src2*/ reg_p_model_layers_9_mlp_down_proj_weight, /*residual*/ reg_add_79 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_20, /*src*/ reg_mean_20 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_93, /*src1*/ reg_add_82, /*src2*/ reg_rsqrt_20 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 10] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_84, /*src1*/ reg_p_model_layers_10_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_94, /*src1*/ reg_mul_93, /*src2*/ reg_add_84 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_85, /*src1*/ reg_type_as_20, /*src2*/ reg_p_model_layers_10_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_86, /*src1*/ reg_type_as_20, /*src2*/ reg_p_model_layers_10_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_72, /*src1*/ reg_type_as_20, /*src2*/ reg_p_model_layers_10_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_10_norm_buff, /*q*/ reg_add_85, /*k_trans*/ reg_expand_22 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_10, /*q*/ reg_add_85, /*k_trans*/ reg_expand_22, /*v*/ reg_expand_23, /*norm_buff*/ reg_scaled_dot_product_attention_10_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_87, /*src1*/ reg_contiguous_10, /*src2*/ reg_p_model_layers_10_self_attn_o_proj_weight, /*residual*/ reg_add_82 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_21, /*src*/ reg_mean_21 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_99, /*src1*/ reg_add_87, /*src2*/ reg_rsqrt_21 );
+        NPU_VEC_ADD( /*dst*/ reg_add_89, /*src1*/ reg_p_model_layers_10_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_100, /*src1*/ reg_mul_99, /*src2*/ reg_add_89 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_10, /*src1*/ reg_type_as_21, /*src2*/ reg_p_model_layers_10_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_101, /*src1*/ reg_type_as_21, /*src2*/ reg_p_model_layers_10_mlp_up_proj_weight, /*factor*/ reg_gelu_10 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_90, /*src1*/ reg_mul_101, /*src2*/ reg_p_model_layers_10_mlp_down_proj_weight, /*residual*/ reg_add_87 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_22, /*src*/ reg_mean_22 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_102, /*src1*/ reg_add_90, /*src2*/ reg_rsqrt_22 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 11] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_92, /*src1*/ reg_p_model_layers_11_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_103, /*src1*/ reg_mul_102, /*src2*/ reg_add_92 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_93, /*src1*/ reg_type_as_22, /*src2*/ reg_p_model_layers_11_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_94, /*src1*/ reg_type_as_22, /*src2*/ reg_p_model_layers_11_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_79, /*src1*/ reg_type_as_22, /*src2*/ reg_p_model_layers_11_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_11_norm_buff, /*q*/ reg_add_93, /*k_trans*/ reg_expand_24 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_11, /*q*/ reg_add_93, /*k_trans*/ reg_expand_24, /*v*/ reg_expand_25, /*norm_buff*/ reg_scaled_dot_product_attention_11_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_95, /*src1*/ reg_contiguous_11, /*src2*/ reg_p_model_layers_11_self_attn_o_proj_weight, /*residual*/ reg_add_90 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_23, /*src*/ reg_mean_23 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_108, /*src1*/ reg_add_95, /*src2*/ reg_rsqrt_23 );
+        NPU_VEC_ADD( /*dst*/ reg_add_97, /*src1*/ reg_p_model_layers_11_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_109, /*src1*/ reg_mul_108, /*src2*/ reg_add_97 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_11, /*src1*/ reg_type_as_23, /*src2*/ reg_p_model_layers_11_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_110, /*src1*/ reg_type_as_23, /*src2*/ reg_p_model_layers_11_mlp_up_proj_weight, /*factor*/ reg_gelu_11 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_98, /*src1*/ reg_mul_110, /*src2*/ reg_p_model_layers_11_mlp_down_proj_weight, /*residual*/ reg_add_95 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_24, /*src*/ reg_mean_24 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_111, /*src1*/ reg_add_98, /*src2*/ reg_rsqrt_24 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 12] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_100, /*src1*/ reg_p_model_layers_12_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_112, /*src1*/ reg_mul_111, /*src2*/ reg_add_100 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_101, /*src1*/ reg_type_as_24, /*src2*/ reg_p_model_layers_12_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_102, /*src1*/ reg_type_as_24, /*src2*/ reg_p_model_layers_12_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_86, /*src1*/ reg_type_as_24, /*src2*/ reg_p_model_layers_12_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_12_norm_buff, /*q*/ reg_add_101, /*k_trans*/ reg_expand_26 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_12, /*q*/ reg_add_101, /*k_trans*/ reg_expand_26, /*v*/ reg_expand_27, /*norm_buff*/ reg_scaled_dot_product_attention_12_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_103, /*src1*/ reg_contiguous_12, /*src2*/ reg_p_model_layers_12_self_attn_o_proj_weight, /*residual*/ reg_add_98 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_25, /*src*/ reg_mean_25 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_117, /*src1*/ reg_add_103, /*src2*/ reg_rsqrt_25 );
+        NPU_VEC_ADD( /*dst*/ reg_add_105, /*src1*/ reg_p_model_layers_12_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_118, /*src1*/ reg_mul_117, /*src2*/ reg_add_105 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_12, /*src1*/ reg_type_as_25, /*src2*/ reg_p_model_layers_12_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_119, /*src1*/ reg_type_as_25, /*src2*/ reg_p_model_layers_12_mlp_up_proj_weight, /*factor*/ reg_gelu_12 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_106, /*src1*/ reg_mul_119, /*src2*/ reg_p_model_layers_12_mlp_down_proj_weight, /*residual*/ reg_add_103 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_26, /*src*/ reg_mean_26 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_120, /*src1*/ reg_add_106, /*src2*/ reg_rsqrt_26 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 13] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_108, /*src1*/ reg_p_model_layers_13_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_121, /*src1*/ reg_mul_120, /*src2*/ reg_add_108 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_109, /*src1*/ reg_type_as_26, /*src2*/ reg_p_model_layers_13_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_110, /*src1*/ reg_type_as_26, /*src2*/ reg_p_model_layers_13_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_93, /*src1*/ reg_type_as_26, /*src2*/ reg_p_model_layers_13_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_13_norm_buff, /*q*/ reg_add_109, /*k_trans*/ reg_expand_28 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_13, /*q*/ reg_add_109, /*k_trans*/ reg_expand_28, /*v*/ reg_expand_29, /*norm_buff*/ reg_scaled_dot_product_attention_13_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_111, /*src1*/ reg_contiguous_13, /*src2*/ reg_p_model_layers_13_self_attn_o_proj_weight, /*residual*/ reg_add_106 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_27, /*src*/ reg_mean_27 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_126, /*src1*/ reg_add_111, /*src2*/ reg_rsqrt_27 );
+        NPU_VEC_ADD( /*dst*/ reg_add_113, /*src1*/ reg_p_model_layers_13_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_127, /*src1*/ reg_mul_126, /*src2*/ reg_add_113 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_13, /*src1*/ reg_type_as_27, /*src2*/ reg_p_model_layers_13_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_128, /*src1*/ reg_type_as_27, /*src2*/ reg_p_model_layers_13_mlp_up_proj_weight, /*factor*/ reg_gelu_13 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_114, /*src1*/ reg_mul_128, /*src2*/ reg_p_model_layers_13_mlp_down_proj_weight, /*residual*/ reg_add_111 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_28, /*src*/ reg_mean_28 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_129, /*src1*/ reg_add_114, /*src2*/ reg_rsqrt_28 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 14] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_116, /*src1*/ reg_p_model_layers_14_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_130, /*src1*/ reg_mul_129, /*src2*/ reg_add_116 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_117, /*src1*/ reg_type_as_28, /*src2*/ reg_p_model_layers_14_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_118, /*src1*/ reg_type_as_28, /*src2*/ reg_p_model_layers_14_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_100, /*src1*/ reg_type_as_28, /*src2*/ reg_p_model_layers_14_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_14_norm_buff, /*q*/ reg_add_117, /*k_trans*/ reg_expand_30 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_14, /*q*/ reg_add_117, /*k_trans*/ reg_expand_30, /*v*/ reg_expand_31, /*norm_buff*/ reg_scaled_dot_product_attention_14_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_119, /*src1*/ reg_contiguous_14, /*src2*/ reg_p_model_layers_14_self_attn_o_proj_weight, /*residual*/ reg_add_114 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_29, /*src*/ reg_mean_29 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_135, /*src1*/ reg_add_119, /*src2*/ reg_rsqrt_29 );
+        NPU_VEC_ADD( /*dst*/ reg_add_121, /*src1*/ reg_p_model_layers_14_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_136, /*src1*/ reg_mul_135, /*src2*/ reg_add_121 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_14, /*src1*/ reg_type_as_29, /*src2*/ reg_p_model_layers_14_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_137, /*src1*/ reg_type_as_29, /*src2*/ reg_p_model_layers_14_mlp_up_proj_weight, /*factor*/ reg_gelu_14 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_122, /*src1*/ reg_mul_137, /*src2*/ reg_p_model_layers_14_mlp_down_proj_weight, /*residual*/ reg_add_119 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_30, /*src*/ reg_mean_30 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_138, /*src1*/ reg_add_122, /*src2*/ reg_rsqrt_30 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 15] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_124, /*src1*/ reg_p_model_layers_15_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_139, /*src1*/ reg_mul_138, /*src2*/ reg_add_124 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_125, /*src1*/ reg_type_as_30, /*src2*/ reg_p_model_layers_15_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_126, /*src1*/ reg_type_as_30, /*src2*/ reg_p_model_layers_15_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_107, /*src1*/ reg_type_as_30, /*src2*/ reg_p_model_layers_15_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_15_norm_buff, /*q*/ reg_add_125, /*k_trans*/ reg_expand_32 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_15, /*q*/ reg_add_125, /*k_trans*/ reg_expand_32, /*v*/ reg_expand_33, /*norm_buff*/ reg_scaled_dot_product_attention_15_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_127, /*src1*/ reg_contiguous_15, /*src2*/ reg_p_model_layers_15_self_attn_o_proj_weight, /*residual*/ reg_add_122 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_31, /*src*/ reg_mean_31 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_144, /*src1*/ reg_add_127, /*src2*/ reg_rsqrt_31 );
+        NPU_VEC_ADD( /*dst*/ reg_add_129, /*src1*/ reg_p_model_layers_15_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_145, /*src1*/ reg_mul_144, /*src2*/ reg_add_129 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_15, /*src1*/ reg_type_as_31, /*src2*/ reg_p_model_layers_15_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_146, /*src1*/ reg_type_as_31, /*src2*/ reg_p_model_layers_15_mlp_up_proj_weight, /*factor*/ reg_gelu_15 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_130, /*src1*/ reg_mul_146, /*src2*/ reg_p_model_layers_15_mlp_down_proj_weight, /*residual*/ reg_add_127 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_32, /*src*/ reg_mean_32 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_147, /*src1*/ reg_add_130, /*src2*/ reg_rsqrt_32 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 16] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_132, /*src1*/ reg_p_model_layers_16_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_148, /*src1*/ reg_mul_147, /*src2*/ reg_add_132 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_133, /*src1*/ reg_type_as_32, /*src2*/ reg_p_model_layers_16_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_134, /*src1*/ reg_type_as_32, /*src2*/ reg_p_model_layers_16_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_114, /*src1*/ reg_type_as_32, /*src2*/ reg_p_model_layers_16_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_16_norm_buff, /*q*/ reg_add_133, /*k_trans*/ reg_expand_34 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_16, /*q*/ reg_add_133, /*k_trans*/ reg_expand_34, /*v*/ reg_expand_35, /*norm_buff*/ reg_scaled_dot_product_attention_16_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_135, /*src1*/ reg_contiguous_16, /*src2*/ reg_p_model_layers_16_self_attn_o_proj_weight, /*residual*/ reg_add_130 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_33, /*src*/ reg_mean_33 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_153, /*src1*/ reg_add_135, /*src2*/ reg_rsqrt_33 );
+        NPU_VEC_ADD( /*dst*/ reg_add_137, /*src1*/ reg_p_model_layers_16_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_154, /*src1*/ reg_mul_153, /*src2*/ reg_add_137 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_16, /*src1*/ reg_type_as_33, /*src2*/ reg_p_model_layers_16_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_155, /*src1*/ reg_type_as_33, /*src2*/ reg_p_model_layers_16_mlp_up_proj_weight, /*factor*/ reg_gelu_16 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_138, /*src1*/ reg_mul_155, /*src2*/ reg_p_model_layers_16_mlp_down_proj_weight, /*residual*/ reg_add_135 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_34, /*src*/ reg_mean_34 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_156, /*src1*/ reg_add_138, /*src2*/ reg_rsqrt_34 );
+    }
+}
+
+       // === [Phase 2: Transformer Layer 17] ===
+{
+        NPU_VEC_ADD( /*dst*/ reg_add_140, /*src1*/ reg_p_model_layers_17_input_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_157, /*src1*/ reg_mul_156, /*src2*/ reg_add_140 );
+    // --- [Attention Block] ---
+    {
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_141, /*src1*/ reg_type_as_34, /*src2*/ reg_p_model_layers_17_self_attn_q_proj_weight );
+        NPU_FUSED_GEMM_ROPE( /*dst*/ reg_add_142, /*src1*/ reg_type_as_34, /*src2*/ reg_p_model_layers_17_self_attn_k_proj_weight );
+        NPU_GEMM( /*dst*/ reg_linear_121, /*src1*/ reg_type_as_34, /*src2*/ reg_p_model_layers_17_self_attn_v_proj_weight );
+        // [Online Softmax: 2-Phase Tile FSM (using norm_buff)]
+        NPU_SDPA_PHASE1_REDUCE( /*norm_buff*/ reg_scaled_dot_product_attention_17_norm_buff, /*q*/ reg_add_141, /*k_trans*/ reg_expand_36 );
+        NPU_SDPA_PHASE2_UPDATE( /*dst*/ reg_scaled_dot_product_attention_17, /*q*/ reg_add_141, /*k_trans*/ reg_expand_36, /*v*/ reg_expand_37, /*norm_buff*/ reg_scaled_dot_product_attention_17_norm_buff );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_143, /*src1*/ reg_contiguous_17, /*src2*/ reg_p_model_layers_17_self_attn_o_proj_weight, /*residual*/ reg_add_138 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_35, /*src*/ reg_mean_35 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_162, /*src1*/ reg_add_143, /*src2*/ reg_rsqrt_35 );
+        NPU_VEC_ADD( /*dst*/ reg_add_145, /*src1*/ reg_p_model_layers_17_post_attention_layernorm_weight, /*src2*/ 1.0 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_163, /*src1*/ reg_mul_162, /*src2*/ reg_add_145 );
+    }
+    // --- [MLP Block (GeGLU)] ---
+    {
+        NPU_FUSED_GEMM_GELU( /*dst*/ reg_gelu_17, /*src1*/ reg_type_as_35, /*src2*/ reg_p_model_layers_17_mlp_gate_proj_weight );
+        NPU_FUSED_GEMM_MUL( /*dst*/ reg_mul_164, /*src1*/ reg_type_as_35, /*src2*/ reg_p_model_layers_17_mlp_up_proj_weight, /*factor*/ reg_gelu_17 );
+        NPU_FUSED_GEMM_ADD( /*dst*/ reg_add_146, /*src1*/ reg_mul_164, /*src2*/ reg_p_model_layers_17_mlp_down_proj_weight, /*residual*/ reg_add_143 );
+        NPU_RMSNORM( /*dst*/ reg_rsqrt_36, /*src*/ reg_mean_36 );
+        NPU_VEC_MUL( /*dst*/ reg_mul_165, /*src1*/ reg_add_146, /*src2*/ reg_rsqrt_36 );
+    }
+}
+
+// === [Phase 3: Final Norm & LM Head] ===
+{
+    NPU_VEC_ADD( /*dst*/ reg_add_148, /*src1*/ reg_p_model_norm_weight, /*src2*/ 1.0 );
+    NPU_VEC_MUL( /*dst*/ reg_mul_166, /*src1*/ reg_mul_165, /*src2*/ reg_add_148 );
+    NPU_GEMM( /*dst*/ reg_linear_126, /*src1*/ reg_alias, /*src2*/ reg_p_lm_head_weight );
+}
