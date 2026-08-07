@@ -6,63 +6,51 @@ import struct
 def build_rs1(
     # --- [15:0] 16b: Vector 상수배/덧셈 오퍼랜드 ---
     constant_operand=0,
-    
     # --- [31:16] 16b: Write Mask 생성을 위한 Valid Row 비트맵 ---
     # 기본값: 16개 Row 모두 Valid (Deadlock 방지 및 Dummy Flush 용도)
     valid_row=0xFFFF,
-    
     # --- [32] 1b: Output Vector Compact 레이아웃 선택 (0: tiled, 1: compact) ---
     vector_compact_out=0,
-    
     # --- [33] 1b: Input Vector Compact 모드 (Zero Padder 가동) ---
     vector_compact_in=0,
-    
     # --- [35:34] 2b: 출력 스트림 종착점 (0: vpu2, 1: vpu1) ---
     out_point=0,
-    
     # --- [37:36] 2b: 입력 스트림 시작점 (0: mxu, 1: vpu1, 2: vpu2) ---
     input_point=0,
-    
     # --- [38] 1b: Write 시 구조체 output_stride 자동 계산 적용 ---
     tile_strided_wr=0,
-    
-    # --- [39] 1b: Read 시 구조체 input_stride 자동 계산 적용 ---
+    # --- [40:39] 2b: Read 시 구조체 offset 자동 계산 적용 [1: input, 0: weight] ---
     tile_strided_rd=0,
-    
-    # --- [40] 1b: DMA Write 시 종단 Output Transposer 통과 ---
+    # --- [41] 1b: DMA Write 시 종단 Output Transposer 통과 ---
     transpose_en_wr=0,
-    
-    # --- [42:41] 2b: DMA Read 시 입력 Transposer 통과 [1: input, 0: weight] ---
+    # --- [43:42] 2b: DMA Read 시 입력 Transposer 통과 [1: input, 0: weight] ---
     transpose_en_rd=0,
     
-    # ====== hw_enables [49:43] (7 bits) ======
-    # [43] 1b: VPU2 RoPE 위치 인코딩 활성화
+    # ====== hw_enables [50:44] (7 bits) ======
+    # [44] 1b: VPU2 RoPE 위치 인코딩 활성화
     rope_en=0,
-    # [45:44] 2b: VPU2 Norm 모드
+    # [46:45] 2b: VPU2 Norm 모드
     norm_mode=0,
-    # [46] 1b: VPU1 양자화 및 SiLU(GELU) 활성화
+    # [47] 1b: VPU1 양자화 및 SiLU(GELU) 활성화
     act_en=0,
-    # [48:47] 2b: VPU1 ALU 모드 (0: Bypass, 1: Add, 2: Mul)
+    # [49:48] 2b: VPU1 ALU 모드 (0: Bypass, 1: Add, 2: Mul)
     alu_mode=0,
-    # [49] 1b: TPU 매트릭스 연산기 가동
+    # [50] 1b: TPU 매트릭스 연산기 가동
     mxu_en=0,
     # =========================================
     
-    # --- [54:50] 5b: LUT/Param 기록 펄스 [4:Act, 3:Exp, 2:Scale, 1:Sin, 0:Cos] ---
+    # --- [55:51] 5b: LUT/Param 기록 펄스 [4:Act, 3:Exp, 2:Scale, 1:Sin, 0:Cos] ---
     lut_write=0,
-    
-    # --- [55] 1b: TPU -> VPU1 -> VPU2 End-to-End 라우팅 ---
+    # --- [56] 1b: TPU -> VPU1 -> VPU2 End-to-End 라우팅 ---
     fusion_en=0,
-    
-    # --- [58:56] 3b: Intermediate Buffer write enable [2:out, 1:weight, 0:input] ---
+    # --- [59:57] 3b: Intermediate Buffer write enable [2:out, 1:weight, 0:input] ---
     cache_enable=0,
-    
-    # --- [59] 1b: Normalizer phase1 output NB write enable ---
+    # --- [60] 1b: Normalizer phase1 output NB write enable ---
     nb_enable=0
 ):
     """
-    "Shoot and Go" 철학을 따르는 NPU 제어용 rs1 64-bit 레지스터 패킹 함수.
-    비트 마스킹(&)을 통해 각 필드가 할당된 크기를 초과하여 오염(Overflow)되지 않도록 안전하게 패킹합니다.
+    최신 NPU 제어용 rs1 64-bit 레지스터 패킹 함수 (61비트 할당).
+    비트 마스킹(&)을 통해 각 필드가 할당된 크기를 초과하여 오염되지 않도록 안전하게 패킹합니다.
     """
     rs1 = 0
     
@@ -73,25 +61,28 @@ def build_rs1(
     rs1 |= (out_point & 0x3) << 34
     rs1 |= (input_point & 0x3) << 36
     rs1 |= (tile_strided_wr & 0x1) << 38
-    rs1 |= (tile_strided_rd & 0x1) << 39
-    rs1 |= (transpose_en_wr & 0x1) << 40
-    rs1 |= (transpose_en_rd & 0x3) << 41
     
-    # hw_enables 패킹 (43번 비트부터 차례로 누적)
-    rs1 |= (rope_en & 0x1) << 43
-    rs1 |= (norm_mode & 0x3) << 44
-    rs1 |= (act_en & 0x1) << 46
-    rs1 |= (alu_mode & 0x3) << 47
-    rs1 |= (mxu_en & 0x1) << 49
+    # [변경 사항 반영] tile_strided_rd가 2비트로 확장됨 (비트 오프셋 1씩 밀림)
+    rs1 |= (tile_strided_rd & 0x3) << 39
     
-    rs1 |= (lut_write & 0x1F) << 50
-    rs1 |= (fusion_en & 0x1) << 55
-    rs1 |= (cache_enable & 0x7) << 56
-    rs1 |= (nb_enable & 0x1) << 59
+    rs1 |= (transpose_en_wr & 0x1) << 41
+    rs1 |= (transpose_en_rd & 0x3) << 42
     
-    # 63~60 비트는 Reserved 구역 (0으로 유지됨)
+    # hw_enables 패킹 (44번 비트부터 차례로 누적)
+    rs1 |= (rope_en & 0x1) << 44
+    rs1 |= (norm_mode & 0x3) << 45
+    rs1 |= (act_en & 0x1) << 47
+    rs1 |= (alu_mode & 0x3) << 48
+    rs1 |= (mxu_en & 0x1) << 50
+    
+    rs1 |= (lut_write & 0x1F) << 51
+    rs1 |= (fusion_en & 0x1) << 56
+    rs1 |= (cache_enable & 0x7) << 57
+    rs1 |= (nb_enable & 0x1) << 60
+    
+    # 63~61 비트는 Reserved 구역 (0으로 유지됨)
     return rs1
-
+    
 def build_rs2_struct(
     # --- 1. Data Pointers (void*) ---
     input_addr=0,
