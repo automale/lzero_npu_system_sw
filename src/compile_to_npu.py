@@ -4,81 +4,169 @@ import struct
 # [1] 비트 매킹 헬퍼 함수 (작성자님이 제공하신 코드 동일)
 # ---------------------------------------------------------
 def build_rs1(
-    # [0:15] 16b: Vector 상수배/덧셈 오퍼랜드
+    # --- [15:0] 16b: Vector 상수배/덧셈 오퍼랜드 ---
     constant_operand=0,
-    # [16:31] 16b: Write Mask 생성을 위한 Valid Row 비트맵 (기본값: 16개 Row 모두 Valid)
+    
+    # --- [31:16] 16b: Write Mask 생성을 위한 Valid Row 비트맵 ---
+    # 기본값: 16개 Row 모두 Valid (Deadlock 방지 및 Dummy Flush 용도)
     valid_row=0xFFFF,
-    # [32] 1b: Compact Vector Zero Padding 모드
-    vector_compact_mode=0,
-    # [33:34] 2b: 출력 스트림 종착점 (0: vpu2, 1: vpu1)
+    
+    # --- [32] 1b: Output Vector Compact 레이아웃 선택 (0: tiled, 1: compact) ---
+    vector_compact_out=0,
+    
+    # --- [33] 1b: Input Vector Compact 모드 (Zero Padder 가동) ---
+    vector_compact_in=0,
+    
+    # --- [35:34] 2b: 출력 스트림 종착점 (0: vpu2, 1: vpu1) ---
     out_point=0,
-    # [35:36] 2b: 입력 스트림 시작점 (0: mxu, 1: vpu1, 2: vpu2)
+    
+    # --- [37:36] 2b: 입력 스트림 시작점 (0: mxu, 1: vpu1, 2: vpu2) ---
     input_point=0,
-    # [37] 1b: Write 시 구조체 output_stride 적용
+    
+    # --- [38] 1b: Write 시 구조체 output_stride 자동 계산 적용 ---
     tile_strided_wr=0,
-    # [38] 1b: Read 시 구조체 input_stride 적용
+    
+    # --- [39] 1b: Read 시 구조체 input_stride 자동 계산 적용 ---
     tile_strided_rd=0,
-    # [39] 1b: DMA Write 시 종단 Transposer 통과
+    
+    # --- [40] 1b: DMA Write 시 종단 Output Transposer 통과 ---
     transpose_en_wr=0,
-    # [40:41] 2b: DMA Read 시 입력 Transposer 통과 (0번 1번 포트 각각 제어)
+    
+    # --- [42:41] 2b: DMA Read 시 입력 Transposer 통과 [1: input, 0: weight] ---
     transpose_en_rd=0,
-    # --- hw_enables (7 bits) ---
-    # [42] 1b: VPU2 RoPE 인코딩 활성화
+    
+    # ====== hw_enables [49:43] (7 bits) ======
+    # [43] 1b: VPU2 RoPE 위치 인코딩 활성화
     rope_en=0,
-    # [43:44] 2b: VPU2 Norm 모드
+    # [45:44] 2b: VPU2 Norm 모드
     norm_mode=0,
-    # [45] 1b: VPU1 양자화 및 SiLU(GELU) 활성화
+    # [46] 1b: VPU1 양자화 및 SiLU(GELU) 활성화
     act_en=0,
-    # [46:47] 2b: VPU1 ALU 모드 (0: Bypass, 1: Add, 2: Mul)
+    # [48:47] 2b: VPU1 ALU 모드 (0: Bypass, 1: Add, 2: Mul)
     alu_mode=0,
-    # [48] 1b: TPU 매트릭스 연산기 가동
+    # [49] 1b: TPU 매트릭스 연산기 가동
     mxu_en=0,
-    # ---------------------------
-    # [49:53] 5b: LUT/Param 기록 펄스 [4:Act, 3:Exp, 2:Scale, 1:Sin, 0:Cos]
+    # =========================================
+    
+    # --- [54:50] 5b: LUT/Param 기록 펄스 [4:Act, 3:Exp, 2:Scale, 1:Sin, 0:Cos] ---
     lut_write=0,
-    # [54] 1b: TPU -> VPU1 -> VPU2 End-to-End 라우팅
-    fusion_en=0
+    
+    # --- [55] 1b: TPU -> VPU1 -> VPU2 End-to-End 라우팅 ---
+    fusion_en=0,
+    
+    # --- [58:56] 3b: Intermediate Buffer write enable [2:out, 1:weight, 0:input] ---
+    cache_enable=0,
+    
+    # --- [59] 1b: Normalizer phase1 output NB write enable ---
+    nb_enable=0
 ):
     """
-    새로운 하드웨어 제어 명세(55비트 할당)를 반영한 rs1 64-bit 패킹 함수.
-    비트 마스킹(&)을 통해 각 필드가 할당된 크기를 초과하여 다른 비트를 침범하지 않도록 안전하게 패킹합니다.
+    "Shoot and Go" 철학을 따르는 NPU 제어용 rs1 64-bit 레지스터 패킹 함수.
+    비트 마스킹(&)을 통해 각 필드가 할당된 크기를 초과하여 오염(Overflow)되지 않도록 안전하게 패킹합니다.
     """
     rs1 = 0
     
     rs1 |= (constant_operand & 0xFFFF) << 0
     rs1 |= (valid_row & 0xFFFF) << 16
-    rs1 |= (vector_compact_mode & 0x1) << 32
-    rs1 |= (out_point & 0x3) << 33
-    rs1 |= (input_point & 0x3) << 35
-    rs1 |= (tile_strided_wr & 0x1) << 37
-    rs1 |= (tile_strided_rd & 0x1) << 38
-    rs1 |= (transpose_en_wr & 0x1) << 39
-    rs1 |= (transpose_en_rd & 0x3) << 40
+    rs1 |= (vector_compact_out & 0x1) << 32
+    rs1 |= (vector_compact_in & 0x1) << 33
+    rs1 |= (out_point & 0x3) << 34
+    rs1 |= (input_point & 0x3) << 36
+    rs1 |= (tile_strided_wr & 0x1) << 38
+    rs1 |= (tile_strided_rd & 0x1) << 39
+    rs1 |= (transpose_en_wr & 0x1) << 40
+    rs1 |= (transpose_en_rd & 0x3) << 41
     
-    # hw_enables
-    rs1 |= (rope_en & 0x1) << 42
-    rs1 |= (norm_mode & 0x3) << 43
-    rs1 |= (act_en & 0x1) << 45
-    rs1 |= (alu_mode & 0x3) << 46
-    rs1 |= (mxu_en & 0x1) << 48
+    # hw_enables 패킹 (43번 비트부터 차례로 누적)
+    rs1 |= (rope_en & 0x1) << 43
+    rs1 |= (norm_mode & 0x3) << 44
+    rs1 |= (act_en & 0x1) << 46
+    rs1 |= (alu_mode & 0x3) << 47
+    rs1 |= (mxu_en & 0x1) << 49
     
-    rs1 |= (lut_write & 0x1F) << 49
-    rs1 |= (fusion_en & 0x1) << 54
+    rs1 |= (lut_write & 0x1F) << 50
+    rs1 |= (fusion_en & 0x1) << 55
+    rs1 |= (cache_enable & 0x7) << 56
+    rs1 |= (nb_enable & 0x1) << 59
     
-    # 55~63 비트는 Reserved (0으로 유지됨)
+    # 63~60 비트는 Reserved 구역 (0으로 유지됨)
     return rs1
 
-def build_rs2_struct(input_offset=0, weight1_offset=0, residual_offset=0,
-                     act_lut_offset=0, exp_lut_offset=0, scale_val=0,
-                     rope_sin_offset=0, rope_cos_offset=0,
-                     output_offset=0, norm_buff_offset=0,
-                     out_rowNum=0, out_intermNum=0, out_colNum=0):
-    fmt = '<13Q' 
-    return struct.pack(fmt, input_offset, weight1_offset, residual_offset,
-                       act_lut_offset, exp_lut_offset, scale_val,
-                       rope_sin_offset, rope_cos_offset,
-                       output_offset, norm_buff_offset,
-                       out_rowNum, out_intermNum, out_colNum)
+def build_rs2_struct(
+    # --- 1. Data Pointers (void*) ---
+    input_addr=0,
+    weight1_addr=0,
+    weight2_addr=0,     # Residual Add 등을 위한 2nd Operand
+    
+    # --- 2. Parameter Pointers (void*) ---
+    quant_param_addr=0,
+    angle_param_addr=0,
+    
+    # --- 3. LUT & Parameter Pointers (void*) ---
+    act_lut_addr=0,
+    exp_lut_addr=0,
+    scale_lut_addr=0,
+    rope_sin_addr=0,
+    rope_cos_addr=0,
+    
+    # --- 4. Output Pointers (void*) ---
+    output_addr=0,
+    norm_buff_addr=0,   # Phase 1 결과 저장 및 Phase 2 읽기용
+    
+    # --- 5. Dimensions (unsigned, 32-bit) ---
+    out_rowNum=0,       # 1/16 scale
+    out_intermNum=0,    # 1/16 scale
+    out_colNum=0,       # 1/16 scale
+    
+    # --- 6. Strided Offset (unsigned, 32-bit) ---
+    input_offset=0,     # 1/16 scale
+    weight_offset=0,    # 1/16 scale
+    output_offset=0     # 1/16 scale
+):
+    """
+    최신 npu_ctrl 구조체 명세에 맞춘 rs2 (DRAM Descriptor) 패킹 함수.
+    
+    - 12개의 포인터(void*)      -> 'Q' (8 bytes unsigned long long) * 12 = 96 Bytes
+    - 6개의 차원/오프셋(unsigned) -> 'I' (4 bytes unsigned int) * 6       = 24 Bytes
+    - Total Size: 120 Bytes (64-bit alignment 만족)
+    """
+    fmt = '<12Q6I'  # 리틀 엔디안, 12개의 8바이트 정수, 6개의 4바이트 정수
+    
+    return struct.pack(
+        fmt,
+        # 12Q: Pointers
+        input_addr, weight1_addr, weight2_addr,
+        quant_param_addr, angle_param_addr,
+        act_lut_addr, exp_lut_addr, scale_lut_addr, rope_sin_addr, rope_cos_addr,
+        output_addr, norm_buff_addr,
+        
+        # 6I: Dimensions & Offsets
+        out_rowNum, out_intermNum, out_colNum,
+        input_offset, weight_offset, output_offset
+    )
+
+# =========================================================
+# 사용 예시 (메모리 맵 테스트)
+# =========================================================
+if __name__ == "__main__":
+    # 테스트용 주소 상수 (GGUF 메모리 맵 참고)
+    MEM_IN_H_L = 0x0000
+    WT_Q = 0x110000
+    MEM_Q_OUT = 0x2000
+    
+    # 구조체 바이너리 생성 (예: Q Projection 수행 시)
+    rs2_binary = build_rs2_struct(
+        input_addr=MEM_IN_H_L,
+        weight1_addr=WT_Q,
+        output_addr=MEM_Q_OUT,
+        out_rowNum=1,       # 시퀀스 길이 / 16
+        out_intermNum=128,  # 입력 차원 2048 / 16
+        out_colNum=128      # 출력 차원 2048 / 16
+    )
+    
+    print(f"Generated Struct Size: {len(rs2_binary)} Bytes (Expected: 120)")
+    # 이 rs2_binary 바이트 배열을 호스트 CPU(RISC-V)가 DRAM에 복사한 뒤,
+    # 그 시작 주소를 RoCC 커스텀 명령어의 rs2 인자로 전달하면 됩니다.
 
 # ---------------------------------------------------------
 # [2] 하드웨어 주소 맵 (가상 오프셋, 실제로는 GGUF에서 추출)
