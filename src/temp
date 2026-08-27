@@ -1,0 +1,163 @@
+============================ start norm ============================
+H_0 = X_embed * sqrt(2048)
+rs1:
+alu constant mode, mul
+vpu1 in vpu2 out
+
+rs2:
+only input 
+
+====================================================================
+
+=========================== layer_1 attn ===========================
+temp_0-0 = rms_norm(H_0)
+rms_norm
+vpu2 in vpu2 out
+
+X_norm1_0 = temp_0-0 (*) ( W_normin_0 + 1 )
+alu multiplication
+vpu1 in vpu1 out
+
+Q_tilda_0 = rope( X_norm1_0 * {W_q_0}^T )
+GEMM + rope
+tpu in vpu2 out
+
+K_tilda_0 = rope( X_norm1_0 * {W_k_0}^T ) // + save K_tilda to K_cache
+GEMM + rope, no transpose out
+tpu in vpu2 out
+
+V_0 = X_norm1_0 * {W_v_0}^T               // + save V to V_cache
+GEMM, strided out, no transpose out
+tpu in vpu2 out
+
+temp_0-1 = Softmax ( Q_tilda_0 * { K_cache }^T / sqrt(256) )
+alu constant, softmax norm, GEMM, weight transpose in
+tpu in vpu2 out
+
+O_attn_0 = temp_0-1 * V_cache
+GEMM
+tpu in vpu1 out
+
+X_attnout_0 = O_attn_0 * {W_o_0}^T
+GEMM
+tpu in vpu1 out
+
+H_mid_0 = H_0 + X_attnout_0
+alu add
+vpu1 in vpu2 out
+
+=========================== layer_1 post ===========================
+temp_0-2 = rms_norm(H_mid_0)
+rms_norm
+vpu2 in vpu2 out
+
+X_norm2_0 = temp_0-2 (*) ( W_normpost_0 + 1 )
+alu multiplication
+vpu1 in vpu1 out
+
+MLP_mid_0 = GeLU( X_norm2_0 * {W_gate_0}^T ) (*) ( X_norm2_0 * {W_up_0}^T ) // fusion operand1 : GeLU(...), operand2 : ( X_norm2_0 * ... )
+fusion, activation enable
+operand1 : GELU ( ... ), operand2 : X_norm2_0 * W_up_0^T
+activation : GELU programming
+tpu in vpu1 out
+
+X_mlp_out_0 = MLP_mid_0 * {W_down_0}^T
+GEMM
+tpu in vpu1 out
+
+H_1 = H_mid_0 + X_mlp_out_0
+alu add
+vpu1 in vpu2 out
+
+====================================================================
+
+=========================== layer_2 attn ===========================
+temp_1-0 = rms_norm(H_1) 
+X_norm1_1 = temp_1-0 (*) ( W_normin_1 + 1 )
+
+Q_tilda_1 = rope( X_norm1_1 * {W_q_1}^T )
+K_tilda_1 = rope( X_norm1_1 * {W_k_1}^T ) // + save K_tilda to K_cache
+V_1 = X_norm1_1 * {W_v_1}^T               // + save V to V_cache
+
+temp_1-1 = Softmax ( Q_tilda_1 * { K_cache }^T / sqrt(256) )
+O_attn_1 = temp_1-1 * V_cache
+
+X_attnout_1 = O_attn_1 * {W_o_1}^T
+
+H_mid_1 = H_1 + X_attnout_1
+=========================== layer_2 post ===========================
+temp_1-2 = rms_norm(H_mid_1) 
+X_norm2_1 = temp_1-2 (*) ( W_normpost_1 + 1 )
+
+MLP_mid_1 = GeLU( X_norm2_1 * {W_gate_1}^T ) (*) ( X_norm2_1 * {W_up_1}^T ) // fusion operand1 : GeLU(...), operand2 : ( X_norm2_1 * ... )
+
+X_mlp_out_1 = MLP_mid_1 * {W_down_1}^T
+
+H_2 = H_mid_1 + X_mlp_out_1
+====================================================================
+
+=========================== layer_3 attn ===========================
+temp_2-0 = rms_norm(H_2) 
+X_norm1_2 = temp_2-0 (*) ( W_normin_2 + 1 )
+
+Q_tilda_2 = rope( X_norm1_2 * {W_q_2}^T )
+K_tilda_2 = rope( X_norm1_2 * {W_k_2}^T ) // + save K_tilda to K_cache
+V_2 = X_norm1_2 * {W_v_2}^T               // + save V to V_cache
+
+temp_2-1 = Softmax ( Q_tilda_2 * { K_cache }^T / sqrt(256) )
+O_attn_2 = temp_2-1 * V_cache
+
+X_attnout_2 = O_attn_2 * {W_o_2}^T
+
+H_mid_2 = H_2 + X_attnout_2
+=========================== layer_3 post ===========================
+temp_2-2 = rms_norm(H_mid_2) 
+X_norm2_2 = temp_2-2 (*) ( W_normpost_2 + 1 )
+
+MLP_mid_2 = GeLU( X_norm2_2 * {W_gate_2}^T ) (*) ( X_norm2_2 * {W_up_2}^T ) // fusion operand1 : GeLU(...), operand2 : ( X_norm2_2 * ... )
+
+X_mlp_out_2 = MLP_mid_2 * {W_down_2}^T
+
+H_3 = H_mid_2 + X_mlp_out_2
+====================================================================
+
+...
+
+=========================== layer_18 attn ===========================
+temp_17-0 = rms_norm(H_17) 
+X_norm1_17 = temp_17-0 (*) ( W_normin_17 + 1 )
+
+Q_tilda_17 = rope( X_norm1_17 * {W_q_17}^T )
+K_tilda_17 = rope( X_norm1_17 * {W_k_17}^T ) // + save K_tilda to K_cache
+V_17 = X_norm1_17 * {W_v_17}^T               // + save V to V_cache
+
+temp_17-1 = Softmax ( Q_tilda_17 * { K_cache }^T / sqrt(256) )
+O_attn_17 = temp_17-1 * V_cache
+
+X_attnout_17 = O_attn_17 * {W_o_17}^T
+
+H_mid_17 = H_17 + X_attnout_17
+=========================== layer_18 post ===========================
+temp_17-2 = rms_norm(H_mid_17) 
+X_norm2_17 = temp_17-2 (*) ( W_normpost_17 + 1 )
+
+MLP_mid_17 = GeLU( X_norm2_17 * {W_gate_17}^T ) (*) ( X_norm2_17 * {W_up_17}^T ) // fusion operand1 : GeLU(...), operand2 : ( X_norm2_17 * ... )
+
+X_mlp_out_17 = MLP_mid_17 * {W_down_17}^T
+
+H_18 = H_mid_17 + X_mlp_out_17
+====================================================================
+
+============================ final norm ============================
+temp_18-0 = rms_norm(H_18)
+rms_norm
+vpu2 in vpu2 out
+
+X_norm_final = temp_18-0 (*) ( W_norm_final + 1 )
+alu multiplication
+vpu1 in vpu1 out
+
+Logits = X_norm_final * {W_embed}^T
+GEMM
+tpu in vpu1 out
+====================================================================
