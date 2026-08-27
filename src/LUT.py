@@ -1,86 +1,120 @@
-import numpy as np
-import os
+import math
 import struct
+import os
 
-# =====================================================================
-# NPU Universal 8-bit LUT Generator (Exp, SiLU, ReLU, GELU, Sin, Cos, Scale)
-# - Output: 8-bit Raw Flat Binary (.bin) (No Headers, Pure Payload)
-# =====================================================================
+def generate_hardware_lut(func_type, input_scale=0.1, output_scale=255.0,
+                          input_bits=8, output_bits=8, out_dir="./luts"):
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
 
-def generate_hardware_lut(func_type, input_scale=0.1, output_scale=255.0, out_dir="./luts"):
-    os.makedirs(out_dir, exist_ok=True)
-    lut_bytes = bytearray(256)
-    filename = f"{out_dir}/{func_type}_lut_256B.bin"
+    table_size = 2 ** input_bits
+    bytes_per_entry = output_bits // 8
+    expected_size = table_size * bytes_per_entry
     
-    for i in range(256):
-        # 1. 입력 양자화 해제 (INT8 -> Float)
-        # Scale(역수) 등 양수 전용 테이블은 0~255를 Unsigned로 해석할 수도 있으나, 
-        # 여기서는 기본적으로 Signed INT8(-128~127) 기준으로 작성합니다.
-        int8_val = i if i < 128 else i - 256
-        x_float = int8_val * input_scale
-        
-        # 2. 수학 함수 연산
+    lut_bytes = bytearray(expected_size)
+    vals_for_verify = [] 
+
+    half_range = table_size // 2
+
+    for i in range(table_size):
+        val_float = float(i if i < half_range else i - table_size)
+        x = val_float * input_scale
+
         if func_type == 'exp':
-            x_clipped = min(0.0, x_float)
-            val_float = np.exp(x_clipped)
-            
-        elif func_type == 'silu':
-            val_float = x_float / (1.0 + np.exp(-x_float))
-            
-        elif func_type == 'relu':
-            val_float = max(0.0, x_float)
+            y = math.exp(max(-80.0, min(0.0, x)))
+            quantized_out = int(round(y * output_scale))
             
         elif func_type == 'gelu':
-            # Gemma-2B에서 사용하는 GELU (Tanh 근사식)
-            val_float = 0.5 * x_float * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (x_float + 0.044715 * np.power(x_float, 3))))
+            y = 0.5 * x * (1.0 + math.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * (x ** 3))))
+            quantized_out = int(round(y * output_scale))
             
         elif func_type == 'sin':
-            val_float = np.sin(x_float)
+            y = math.sin(x)
+            quantized_out = int(round((y + 1.0) * 32767.5))
             
         elif func_type == 'cos':
-            val_float = np.cos(x_float)
+            y = math.cos(x)
+            quantized_out = int(round((y + 1.0) * 32767.5))
             
         elif func_type == 'scale':
-            # Scale LUT (Reciprocal: 1/x)
-            # Softmax의 분모(sum)나 RMSNorm의 분산을 역수로 변환
-            # 0으로 나누는 것을 방지하기 위해 엡실론(epsilon) 추가
-            epsilon = 1e-6
-            val_float = 1.0 / (abs(x_float) + epsilon)
-            
-        else:
-            raise ValueError(f"Unsupported function type: {func_type}")
-            
-        # 3. 출력 양자화 
-        if func_type in ['sin', 'cos']:
-            # [-1.0, 1.0] -> [0, 255] (128이 0.0 역할)
-            quantized_out = int(np.round((val_float + 1.0) * 127.5))
-        else:
-            # 일반 Activation 및 Scale (0.0 이상 양수 -> 0 ~ 255)
-            quantized_out = int(np.round(val_float * output_scale))
-        
-        # 8-bit 범위 클리핑
-        quantized_out = max(0, min(255, quantized_out))
-        lut_bytes[i] = quantized_out
+            epsilon = 1e-5
+            y = 1.0 / (abs(x) + epsilon)
+            quantized_out = int(round(y * output_scale))
 
-    # 바이너리 덤프 (헤더 없이 순수 데이터만 기록)
-    with open(filename, "wb") as f:
+        if output_bits == 16:
+            quantized_out = max(0, min(65535, quantized_out))
+            lut_bytes[i*2:i*2+2] = struct.pack('<H', quantized_out)
+        else:
+            # 명시적 Unsigned 8bit 클리핑으로 Wraparound 차단
+            quantized_out = max(0, min(255, quantized_out))
+            lut_bytes[i] = quantized_out & 0xFF
+            
+        vals_for_verify.append(quantized_out)
+
+    file_name = f"{func_type}_lut_{expected_size}B.bin"
+    file_path = os.path.join(out_dir, file_name)
+    with open(file_path, "wb") as f:
         f.write(lut_bytes)
         
-    print(f"✅ [{func_type.upper():>5}] LUT 생성 완료 -> {filename}")
+    actual_size = os.path.getsize(file_path)
+    return func_type, expected_size, actual_size, vals_for_verify
+
 
 if __name__ == "__main__":
-    # 1. Softmax 용 Exp LUT 
-    generate_hardware_lut('exp', input_scale=0.1, output_scale=255.0)
+    results = []
     
-    # 2. Activation LUT (Gemma-2B는 GeGLU 구조라 GELU만 필요)
-    # (출력 스케일은 양자화 캘리브레이션에 맞춰 조정 필요, 임시로 32.0 세팅)
-    # [제거] SiLU/ReLU: ISA의 Act 슬롯(act_lut_addr, lut_write bit[4])은 1개뿐이라
-    # Gemma가 쓰지 않는 SiLU/ReLU까지 만들 필요 없음 (다른 모델 포팅 시 재활성화)
-    generate_hardware_lut('gelu', input_scale=0.1, output_scale=32.0)
+    results.append(generate_hardware_lut('exp',   input_scale=0.1, output_scale=65535.0,
+                                         input_bits=8,  output_bits=16))
     
-    # 3. RoPE 용 Sin / Cos LUT
-    generate_hardware_lut('sin', input_scale=0.1)
-    generate_hardware_lut('cos', input_scale=0.1)
+    # [확신도 중간] Act(GELU) 10bit입력/8bit출력은 손글씨 설계노트 판독 기반 추정. 하드웨어팀 확인 권장.
+    results.append(generate_hardware_lut('gelu',  input_scale=0.1, output_scale=255.0,
+                                         input_bits=10, output_bits=8))
     
-    # 4. 나눗셈(Softmax 분모, RMSNorm)용 Scale LUT (1/x)
-    generate_hardware_lut('scale', input_scale=0.1, output_scale=32.0)
+    results.append(generate_hardware_lut('sin',   input_scale=0.1,
+                                         input_bits=10, output_bits=16))
+    
+    results.append(generate_hardware_lut('cos',   input_scale=0.1,
+                                         input_bits=10, output_bits=16))
+    
+    results.append(generate_hardware_lut('scale', input_scale=0.1, output_scale=6553.5,
+                                         input_bits=8,  output_bits=16))
+
+    print("\n--- [1] 칩셋 메모리 적재용 정적 LUT 생성 결과 ---")
+    for func_type, expected, actual, vals in results:
+        status = "✅ PASS" if expected == actual else "❌ FAIL"
+        print(f"[{func_type.upper():<5}] 예상 크기: {expected:<4}B | 실제 크기: {actual:<4}B -> {status}")
+
+    print("\n--- [2] LUT 데이터 무결성 및 수치 검증 ---")
+    for func_type, expected, actual, vals in results:
+        min_val = min(vals)
+        max_val = max(vals)
+        
+        range_str = f"Min: {min_val:>5}, Max: {max_val:>5}"
+        print(f"[{func_type.upper():<5}] {range_str}")
+        
+        if func_type == 'cos':
+            cos_0 = vals[0]
+            if cos_0 >= 65530:
+                print(f"   ↳ [cos(0) Check] idx=0 값 {cos_0} (최댓값 근접) -> ✅ PASS")
+            else:
+                print(f"   ↳ [cos(0) Check] idx=0 값 {cos_0} -> ❌ FAIL")
+                
+        if func_type == 'scale':
+            diffs = [abs(vals[i] - vals[i+1]) for i in range(1, 8)]
+            print(f"   ↳ [Scale Curve Check] 연속 Diff (idx 1~8): {diffs}")
+            
+            if diffs[0] > diffs[-1] and all(diffs[i] >= diffs[i+1] for i in range(len(diffs)-1)):
+                print(f"   ↳ [Scale Curve Check] Diff가 지속적으로 감소하는 완벽한 1/x 곡선 확인 -> ✅ PASS")
+            else:
+                print(f"   ↳ [Scale Curve Check] 값이 포화되었거나 직선 형태 -> ❌ FAIL")
+                
+        if func_type == 'gelu':
+            v1000 = vals[1000]
+            v1023 = vals[1023]
+            print(f"   ↳ [GELU Negative Check] idx=1000 (x=-2.4): {v1000}")
+            print(f"   ↳ [GELU Negative Check] idx=1023 (x=-0.1): {v1023}")
+            
+            if 0 <= v1000 <= 5 and 0 <= v1023 <= 5:
+                print(f"   ↳ [GELU Negative Check] 음수가 0 근처로 정상 클리핑됨 -> ✅ PASS")
+            else:
+                print(f"   ↳ [GELU Negative Check] 클리핑 실패 (Wraparound 발생) -> ❌ FAIL")
